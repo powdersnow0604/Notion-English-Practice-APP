@@ -9,6 +9,11 @@ from datetime import datetime
 import traceback
 
 
+WORD_COLUMN_NAME = "Word"
+MEANING_COLUMN_NAME = "Meaning"
+MULTIPLICITY_COLUMN_NAME = "Multiplicity"
+
+
 def setup_logger():
     """Setup logging configuration to write to both console and file"""
     # Create logs directory if it doesn't exist
@@ -170,10 +175,10 @@ def get_random_pages(df: pd.DataFrame, n: int) -> pd.DataFrame:
         len(df),
         size=n,
         replace=False,
-        p=df['Multiplicity'] / df['Multiplicity'].sum()
+        p=df[MULTIPLICITY_COLUMN_NAME] / df[MULTIPLICITY_COLUMN_NAME].sum()
     )
     
-    return df.iloc[selected_indices][['page_id', 'Word', 'Meaning', 'Multiplicity']]
+    return df.iloc[selected_indices][['page_id', WORD_COLUMN_NAME, MEANING_COLUMN_NAME, MULTIPLICITY_COLUMN_NAME]]
 
 
 def get_prompt(df: pd.DataFrame) -> str:
@@ -195,7 +200,7 @@ def get_prompt(df: pd.DataFrame) -> str:
     # Format each row as "(Word;Meaning)"
     word_entries = []
     for _, row in df.iterrows():
-        word_entries.append(f"[{row['Word']};{row['Meaning']}]")
+        word_entries.append(f"[{row[WORD_COLUMN_NAME]};{row[MEANING_COLUMN_NAME]}]")
     
     # Join all entries with spaces
     formatted_words = " ".join(word_entries)
