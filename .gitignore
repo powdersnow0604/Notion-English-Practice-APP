@@ -35,6 +35,7 @@ ENV/
 config.json
 dist/
 build/
+logs/
 *.spec
 
 # Logs

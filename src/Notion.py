@@ -1,8 +1,34 @@
-import json
 import pandas as pd     
 from notion_client import Client
 from typing import List, Dict, Any
 import numpy as np
+import json
+import os
+import logging
+from datetime import datetime
+import traceback
+
+
+def setup_logger():
+    """Setup logging configuration to write to both console and file"""
+    # Create logs directory if it doesn't exist
+    if not os.path.exists('logs'):
+        os.makedirs('logs')
+    
+    # Create a timestamp for the log filename
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    log_file = os.path.join('logs', f'notion_update_{timestamp}.log')
+    
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler()  # This will also print to console
+        ]
+    )
+    return logging.getLogger(__name__)
 
 
 def fetch_page(notion: Client, database_id: str, start_cursor: str = None, page_size: int = 100) -> Dict[str, Any]:
@@ -105,7 +131,7 @@ def create_word_dataframe(database, column_names):
     
     for page in database:
         properties = page.get('properties', {})
-        row_data = {}
+        row_data = {'page_id': page['id']}  # Add page ID to row data
         
         for col_name in column_names:
             if col_name in properties:
@@ -119,7 +145,7 @@ def create_word_dataframe(database, column_names):
     df = pd.DataFrame(data)
     
     if df.empty:
-        return pd.DataFrame(columns=column_names)
+        return pd.DataFrame(columns=['page_id'] + column_names)
         
     return df
 
@@ -147,7 +173,7 @@ def get_random_pages(df: pd.DataFrame, n: int) -> pd.DataFrame:
         p=df['Multiplicity'] / df['Multiplicity'].sum()
     )
     
-    return df.iloc[selected_indices][['Word', 'Meaning']]
+    return df.iloc[selected_indices][['page_id', 'Word', 'Meaning', 'Multiplicity']]
 
 
 def get_prompt(df: pd.DataFrame) -> str:
@@ -178,3 +204,46 @@ def get_prompt(df: pd.DataFrame) -> str:
     final_prompt = f"{Prompt} {formatted_words}"
     
     return final_prompt
+
+
+def update_word_multiplicity(notion: Client, page_id: str, current_multiplicity: int) -> bool:
+    """
+    Update the multiplicity of a word in the Notion database.
+    
+    Args:
+        notion: Notion client
+        page_id: ID of the Notion page to update
+        current_multiplicity: Current multiplicity value (already incremented by 1 from extract_property_value)
+        
+    Returns:
+        bool: True if update was successful, False otherwise
+    """
+    # logger = setup_logger()
+    
+    try:
+        # Update the page
+        notion.pages.update(
+            page_id=page_id,
+            properties={
+                "Multiplicity": {
+                    "number": int(current_multiplicity)  # No need to add 1 as it's already incremented
+                }
+            }
+        )
+        
+        # # Verify the update by fetching the updated page
+        # updated_page = notion.pages.retrieve(page_id=page_id)
+        # updated_multiplicity = updated_page['properties']['Multiplicity']['number']
+        # 
+        # # Compare the updated value with what we tried to set
+        # if updated_multiplicity != current_multiplicity:
+        #     logger.warning(f"Multiplicity update verification failed. Expected: {current_multiplicity}, Got: {updated_multiplicity}")
+        #     return False
+            
+        # logger.info(f"Successfully updated multiplicity for page {page_id} to {current_multiplicity}")
+        return True
+    except Exception as e:
+        # Get the full traceback
+        # error_traceback = traceback.format_exc()
+        # logger.error(f"Error updating multiplicity:\n{error_traceback}")
+        return False

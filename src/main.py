@@ -1,11 +1,12 @@
 import json
 import tkinter as tk
 from tkinter import ttk, messagebox
-from Notion import get_notion_database, create_word_dataframe, get_random_pages, get_prompt
+from Notion import get_notion_database, create_word_dataframe, get_random_pages, get_prompt, update_word_multiplicity
 from Gemini import generate_gemini_response
 from prompt_parser import parse_qa_pairs
 import os
 import sys
+from notion_client import Client
 
 def resource_path(relative_path):
     """Get absolute path to resource, works for dev and for PyInstaller"""
@@ -42,6 +43,7 @@ class EnglishStudyApp:
         self.qa_pairs = []
         self.total_questions = 0
         self.df = None  # Store the database DataFrame
+        self.incorrect_answers = []  # Store incorrect answers for batch update
         
         # Create frames for different pages
         self.start_frame = ttk.Frame(root, padding="20")
@@ -313,6 +315,17 @@ class EnglishStudyApp:
                 "Incorrect",
                 f"✗ The correct answer is: {correct_answer}"
             )
+            # Store incorrect answer for batch update
+            try:
+                current_word_data = self.df[self.df['Word'] == correct_answer].iloc[0]
+                self.incorrect_answers.append({
+                    'page_id': current_word_data['page_id'],
+                    'current_multiplicity': current_word_data['Multiplicity']
+                })
+                # Update local DataFrame
+                self.df.loc[self.df['Word'] == correct_answer, 'Multiplicity'] += 1
+            except Exception as e:
+                print(f"Error storing incorrect answer: {str(e)}")
         
         self.current_question += 1
         self.update_score()
@@ -330,6 +343,27 @@ class EnglishStudyApp:
             f"Final Score: {self.score}/{self.total_questions}\n"
             f"Percentage: {percentage:.1f}%"
         )
+        
+        # Update Notion database with all incorrect answers
+        if self.incorrect_answers:
+            try:
+                notion = Client(auth=self.config.get('NOTION_API_KEY'))
+                success_count = 0
+                for answer in self.incorrect_answers:
+                    if update_word_multiplicity(notion, answer['page_id'], answer['current_multiplicity']):
+                        success_count += 1
+                
+                if success_count < len(self.incorrect_answers):
+                    messagebox.showerror(
+                        "Update Warning",
+                        f"Failed to update {len(self.incorrect_answers) - success_count} words in Notion database"
+                    )
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to update Notion database: {str(e)}")
+            
+            # Clear the incorrect answers list
+            self.incorrect_answers = []
+        
         self.question_label.config(text="Click 'New Quiz' to start another quiz!")
 
 def main():
