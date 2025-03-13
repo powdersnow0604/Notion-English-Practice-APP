@@ -12,6 +12,7 @@ import traceback
 WORD_COLUMN_NAME = "Word"
 MEANING_COLUMN_NAME = "Meaning"
 MULTIPLICITY_COLUMN_NAME = "Multiplicity"
+CREATED_TIME_COLUMN_NAME = "created_time"
 
 
 def setup_logger():
@@ -144,41 +145,90 @@ def create_word_dataframe(database, column_names):
             else:
                 row_data[col_name] = ''
         
+        # Always extract created_time
+        row_data[CREATED_TIME_COLUMN_NAME] = properties[CREATED_TIME_COLUMN_NAME]['date']['start']
+        
         data.append(row_data)
     
     # Create DataFrame
     df = pd.DataFrame(data)
     
     if df.empty:
-        return pd.DataFrame(columns=['page_id'] + column_names)
+        return pd.DataFrame(columns=['page_id'] + column_names + [CREATED_TIME_COLUMN_NAME])
         
     return df
 
 
-def get_random_pages(df: pd.DataFrame, n: int) -> pd.DataFrame:
+def filter_by_recent_days(df: pd.DataFrame, days: int) -> pd.DataFrame:
     """
-    Get n random pages from the DataFrame, where the probability of selection
-    is proportional to the Multiplicity value of each page.
+    Filter DataFrame to only include words created within the last k days
+    
+    Args:
+        df: Input DataFrame containing created_time column
+        days: Number of days to look back
+        
+    Returns:
+        DataFrame containing only words created within the last k days
+    """
+    if CREATED_TIME_COLUMN_NAME not in df.columns:
+        raise ValueError("DataFrame must contain 'created_time' column")
+    
+    # Convert created_time to datetime
+    df[CREATED_TIME_COLUMN_NAME] = pd.to_datetime(df[CREATED_TIME_COLUMN_NAME])
+    
+    # Calculate the cutoff date
+    cutoff_date = pd.Timestamp.now() - pd.Timedelta(days=days)
+    
+    # Filter the DataFrame
+    return df[df[CREATED_TIME_COLUMN_NAME] >= cutoff_date]
+
+
+def get_random_pages(df: pd.DataFrame, n_from_full: int, n_from_recent: int = 0, days: int = None) -> pd.DataFrame:
+    """
+    Get random pages from the DataFrame, combining samples from both the full database
+    and a date-filtered subset. The probability of selection is proportional to the
+    Multiplicity value of each page.
     
     Args:
         df: Input DataFrame containing Word, Meaning, and Multiplicity columns
-        n: Number of random pages to select
+        n_from_full: Number of random pages to select from full database
+        n_from_recent: Number of random pages to select from recent subset (default: 0)
+        days: Optional number of days to filter by for the subset
         
     Returns:
-        DataFrame containing n randomly selected pages
+        DataFrame containing randomly selected pages
     """
-    # Ensure n is not larger than the total number of pages
-    n = min(n, len(df))
-    
-    # Use numpy's random.choice with weights for weighted random sampling
-    selected_indices = np.random.choice(
+    # Get random pages from full database
+    full_indices = np.random.choice(
         len(df),
-        size=n,
+        size=min(n_from_full, len(df)),
         replace=False,
         p=df[MULTIPLICITY_COLUMN_NAME] / df[MULTIPLICITY_COLUMN_NAME].sum()
     )
+    full_selection = df.iloc[full_indices]
     
-    return df.iloc[selected_indices][['page_id', WORD_COLUMN_NAME, MEANING_COLUMN_NAME, MULTIPLICITY_COLUMN_NAME]]
+    # If days is specified and n_from_recent > 0, get additional random pages from recent subset
+    if days is not None and n_from_recent > 0:
+        recent_df = filter_by_recent_days(df, days)
+        if not recent_df.empty:
+            recent_indices = np.random.choice(
+                len(recent_df),
+                size=min(n_from_recent, len(recent_df)),
+                replace=False,
+                p=recent_df[MULTIPLICITY_COLUMN_NAME] / recent_df[MULTIPLICITY_COLUMN_NAME].sum()
+            )
+            recent_selection = recent_df.iloc[recent_indices]
+            
+            # Combine both selections
+            combined_df = pd.concat([full_selection, recent_selection], ignore_index=True)
+            
+            # Shuffle the combined DataFrame
+            combined_df = combined_df.sample(frac=1, ignore_index=True)
+            
+            return combined_df[['page_id', WORD_COLUMN_NAME, MEANING_COLUMN_NAME, MULTIPLICITY_COLUMN_NAME]]
+    
+    # If no days specified, n_from_recent is 0, or recent subset is empty, return only full selection
+    return full_selection[['page_id', WORD_COLUMN_NAME, MEANING_COLUMN_NAME, MULTIPLICITY_COLUMN_NAME]]
 
 
 def get_prompt(df: pd.DataFrame) -> str:

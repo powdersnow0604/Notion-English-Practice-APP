@@ -76,27 +76,97 @@ class EnglishStudyApp:
         )
         title_label.grid(row=1, column=0, pady=20)
         
-        # Word count selector frame
-        word_count_frame = ttk.Frame(self.start_frame)
-        word_count_frame.grid(row=2, column=0, pady=10)
+        # Settings frame
+        settings_frame = ttk.Frame(self.start_frame)
+        settings_frame.grid(row=2, column=0, pady=10)
         
-        # Word count label
+        # Quiz type selector frame
+        quiz_type_frame = ttk.Frame(settings_frame)
+        quiz_type_frame.pack(pady=5)
+        
+        # Quiz type label
         ttk.Label(
-            word_count_frame,
-            text="Number of words:",
+            quiz_type_frame,
+            text="Quiz Type:",
             font=("Arial", 12)
         ).pack(side=tk.LEFT, padx=5)
         
-        # Word count spinbox
-        self.word_count_var = tk.StringVar(value="5")
-        self.word_count_spinbox = ttk.Spinbox(
-            word_count_frame,
-            from_=1,
+        # Quiz type combobox
+        self.quiz_type_var = tk.StringVar(value="Gemini Quiz")
+        self.quiz_type_combo = ttk.Combobox(
+            quiz_type_frame,
+            textvariable=self.quiz_type_var,
+            values=["Gemini Quiz", "Meaning Quiz"],
+            state="readonly",
+            width=15
+        )
+        self.quiz_type_combo.pack(side=tk.LEFT, padx=5)
+        
+        # Word count selector frame for full database
+        full_count_frame = ttk.Frame(settings_frame)
+        full_count_frame.pack(pady=5)
+        
+        # Full database word count label
+        ttk.Label(
+            full_count_frame,
+            text="Words from full database:",
+            font=("Arial", 12)
+        ).pack(side=tk.LEFT, padx=5)
+        
+        # Full database word count spinbox
+        self.full_count_var = tk.StringVar(value="5")
+        self.full_count_spinbox = ttk.Spinbox(
+            full_count_frame,
+            from_=0,
             to=20,
             width=5,
-            textvariable=self.word_count_var
+            textvariable=self.full_count_var
         )
-        self.word_count_spinbox.pack(side=tk.LEFT, padx=5)
+        self.full_count_spinbox.pack(side=tk.LEFT, padx=5)
+        
+        # Word count selector frame for recent words
+        recent_count_frame = ttk.Frame(settings_frame)
+        recent_count_frame.pack(pady=5)
+        
+        # Recent words count label
+        ttk.Label(
+            recent_count_frame,
+            text="Words from recent days:",
+            font=("Arial", 12)
+        ).pack(side=tk.LEFT, padx=5)
+        
+        # Recent words count spinbox
+        self.recent_count_var = tk.StringVar(value="0")
+        self.recent_count_spinbox = ttk.Spinbox(
+            recent_count_frame,
+            from_=0,
+            to=20,
+            width=5,
+            textvariable=self.recent_count_var
+        )
+        self.recent_count_spinbox.pack(side=tk.LEFT, padx=5)
+        
+        # Days selector frame
+        days_frame = ttk.Frame(settings_frame)
+        days_frame.pack(pady=5)
+        
+        # Days label
+        ttk.Label(
+            days_frame,
+            text="Recent days (required for recent words):",
+            font=("Arial", 12)
+        ).pack(side=tk.LEFT, padx=5)
+        
+        # Days spinbox
+        self.days_var = tk.StringVar(value="7")
+        self.days_spinbox = ttk.Spinbox(
+            days_frame,
+            from_=1,
+            to=365,
+            width=5,
+            textvariable=self.days_var
+        )
+        self.days_spinbox.pack(side=tk.LEFT, padx=5)
         
         # Start button
         self.start_button = ttk.Button(
@@ -250,41 +320,62 @@ class EnglishStudyApp:
             return False
     
     def start_new_quiz(self):
-        if self.df is None:
-            messagebox.showerror("Error", "Database not loaded. Please reload the database.")
-            return
-        
-        # Get number of words from spinbox
+        """Start a new quiz with the current settings"""
         try:
-            num_words = int(self.word_count_var.get())
-        except ValueError:
-            messagebox.showerror("Error", "Please enter a valid number of words")
-            return
-        
-        # Enable quiz-related widgets
-        self.answer_entry.config(state='normal')
-        self.submit_button.config(state='normal')
-        
-        # Get random pages
-        random_words_df = get_random_pages(self.df, num_words)
-        
-        # Generate prompt and get response from Gemini
-        prompt = get_prompt(random_words_df)
-        response = generate_gemini_response(prompt, self.config.get('GEMINI_API_KEY'))
-        
-        # Parse Q&A pairs
-        self.qa_pairs = parse_qa_pairs(response)
-        self.total_questions = len(self.qa_pairs)
-        self.current_question = 0
-        self.score = 0
-        
-        # Update UI
-        self.update_question()
-        self.update_score()
-        
-        # Ensure answer entry is enabled and focused
-        self.answer_entry.focus_set()
-        self.answer_entry.icursor(0)
+            # Get number of words and days from spinboxes
+            n_from_full = int(self.full_count_var.get())
+            n_from_recent = int(self.recent_count_var.get())
+            days = int(self.days_var.get()) if n_from_recent > 0 else None
+            
+            if n_from_full == 0 and n_from_recent == 0:
+                messagebox.showwarning("Warning", "Please select at least one word from either full database or recent words!")
+                return
+            
+            # Get random pages with optional days filter
+            selected_pages = get_random_pages(self.df, n_from_full, n_from_recent, days)
+            
+            if selected_pages.empty:
+                messagebox.showwarning("Warning", "No words found matching the selected criteria!")
+                return
+            
+            # Generate questions based on quiz type
+            quiz_type = self.quiz_type_var.get()
+            if quiz_type == "Gemini Quiz":
+                # Generate prompt and get response from Gemini
+                prompt = get_prompt(selected_pages)
+                response = generate_gemini_response(prompt, self.config.get('GEMINI_API_KEY'))
+                
+                # Parse QA pairs
+                self.qa_pairs = parse_qa_pairs(response)
+                
+                if not self.qa_pairs:
+                    messagebox.showerror("Error", "Failed to generate questions!")
+                    return
+            else:  # Meaning Quiz
+                # Create questions directly from word meanings
+                self.qa_pairs = []
+                for _, row in selected_pages.iterrows():
+                    question = f"What is the word that means '{row['Meaning']}'?"
+                    answer = row['Word']
+                    self.qa_pairs.append((question, answer))
+            
+            # Reset quiz state
+            self.current_question = 0
+            self.score = 0
+            self.total_questions = len(self.qa_pairs)
+            self.incorrect_answers = []
+            
+            # Enable quiz interface
+            self.answer_entry.config(state='normal')
+            self.submit_button.config(state='normal')
+            self.answer_var.set("")
+            
+            # Update question display
+            self.update_question()
+            self.update_score()
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to start new quiz: {str(e)}")
     
     def update_question(self):
         if self.current_question < self.total_questions:
@@ -292,11 +383,11 @@ class EnglishStudyApp:
             self.question_label.config(
                 text=f"Question {self.current_question + 1}/{self.total_questions}:\n{question}"
             )
-            self.answer_var.set("")
             # Ensure answer entry is enabled and focused
             self.answer_entry.config(state='normal')
             self.answer_entry.focus_set()
             self.answer_entry.icursor(0)  # Move cursor to start of entry
+            self.submit_button.config(state='normal')
         else:
             self.show_final_score()
     
@@ -329,6 +420,12 @@ class EnglishStudyApp:
         
         self.current_question += 1
         self.update_score()
+        
+        # Reset answer entry and update question
+        self.answer_var.set("")
+        self.answer_entry.config(state='disabled')
+        self.submit_button.config(state='disabled')
+        self.root.update()
         self.update_question()
     
     def update_score(self):
@@ -347,6 +444,12 @@ class EnglishStudyApp:
         # Update Notion database with all incorrect answers
         if self.incorrect_answers:
             try:
+                # Disable UI elements and show updating message
+                self.answer_entry.config(state='disabled')
+                self.submit_button.config(state='disabled')
+                self.question_label.config(text="Updating the database...")
+                self.root.update()
+                
                 notion = Client(auth=self.config.get('NOTION_API_KEY'))
                 success_count = 0
                 for answer in self.incorrect_answers:

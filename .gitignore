@@ -37,6 +37,7 @@ dist/
 build/
 logs/
 *.spec
+test.py
 
 # Logs
 *.log 
