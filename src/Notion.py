@@ -261,14 +261,15 @@ def get_prompt(df: pd.DataFrame) -> str:
     return final_prompt
 
 
-def update_word_multiplicity(notion: Client, page_id: str, current_multiplicity: int) -> bool:
+def update_word_multiplicity(notion: Client, page_id: str, current_multiplicity: int, decrease: bool = False) -> bool:
     """
     Update the multiplicity of a word in the Notion database.
     
     Args:
         notion: Notion client
         page_id: ID of the Notion page to update
-        current_multiplicity: Current multiplicity value (already incremented by 1 from extract_property_value)
+        current_multiplicity: Current multiplicity value (already incremented/decremented by 1 from extract_property_value)
+        decrease: If True, decrease multiplicity by 1, otherwise increase by 1
         
     Returns:
         bool: True if update was successful, False otherwise
@@ -281,7 +282,7 @@ def update_word_multiplicity(notion: Client, page_id: str, current_multiplicity:
             page_id=page_id,
             properties={
                 "Multiplicity": {
-                    "number": int(current_multiplicity)  # No need to add 1 as it's already incremented
+                    "number": int(current_multiplicity)  # No need to add/subtract 1 as it's already done
                 }
             }
         )

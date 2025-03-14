@@ -114,7 +114,7 @@ class EnglishStudyApp:
         ).pack(side=tk.LEFT, padx=5)
         
         # Full database word count spinbox
-        self.full_count_var = tk.StringVar(value="5")
+        self.full_count_var = tk.StringVar(value="20")
         self.full_count_spinbox = ttk.Spinbox(
             full_count_frame,
             from_=0,
@@ -136,7 +136,7 @@ class EnglishStudyApp:
         ).pack(side=tk.LEFT, padx=5)
         
         # Recent words count spinbox
-        self.recent_count_var = tk.StringVar(value="0")
+        self.recent_count_var = tk.StringVar(value="10")
         self.recent_count_spinbox = ttk.Spinbox(
             recent_count_frame,
             from_=0,
@@ -401,17 +401,31 @@ class EnglishStudyApp:
         if user_answer == correct_answer.lower():
             self.score += 1
             messagebox.showinfo("Correct!", "✓ Well done!")
+            # Store correct answer for batch update to decrease multiplicity
+            try:
+                current_word_data = self.df[self.df['Word'] == correct_answer].iloc[0]
+                if current_word_data['Multiplicity'] > 1:  # Only decrease if not already at 0
+                    self.incorrect_answers.append({
+                        'page_id': current_word_data['page_id'],
+                        'current_multiplicity': current_word_data['Multiplicity'] - 2,
+                        'decrease': True  # Flag to indicate this is a decrease operation
+                    })
+                    # Update local DataFrame
+                    self.df.loc[self.df['Word'] == correct_answer, 'Multiplicity'] -= 1
+            except Exception as e:
+                print(f"Error storing correct answer: {str(e)}")
         else:
             messagebox.showerror(
                 "Incorrect",
                 f"✗ The correct answer is: {correct_answer}"
             )
-            # Store incorrect answer for batch update
+            # Store incorrect answer for batch update to increase multiplicity
             try:
                 current_word_data = self.df[self.df['Word'] == correct_answer].iloc[0]
                 self.incorrect_answers.append({
                     'page_id': current_word_data['page_id'],
-                    'current_multiplicity': current_word_data['Multiplicity']
+                    'current_multiplicity': current_word_data['Multiplicity'],
+                    'decrease': False  # Flag to indicate this is an increase operation
                 })
                 # Update local DataFrame
                 self.df.loc[self.df['Word'] == correct_answer, 'Multiplicity'] += 1
@@ -441,7 +455,7 @@ class EnglishStudyApp:
             f"Percentage: {percentage:.1f}%"
         )
         
-        # Update Notion database with all incorrect answers
+        # Update Notion database with all word multiplicity changes
         if self.incorrect_answers:
             try:
                 # Disable UI elements and show updating message
@@ -453,7 +467,7 @@ class EnglishStudyApp:
                 notion = Client(auth=self.config.get('NOTION_API_KEY'))
                 success_count = 0
                 for answer in self.incorrect_answers:
-                    if update_word_multiplicity(notion, answer['page_id'], answer['current_multiplicity']):
+                    if update_word_multiplicity(notion, answer['page_id'], answer['current_multiplicity'], answer.get('decrease', False)):
                         success_count += 1
                 
                 if success_count < len(self.incorrect_answers):
