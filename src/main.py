@@ -7,6 +7,8 @@ from prompt_parser import parse_qa_pairs
 import os
 import sys
 from notion_client import Client
+import threading
+from queue import Queue, Empty
 
 def resource_path(relative_path):
     """Get absolute path to resource, works for dev and for PyInstaller"""
@@ -22,6 +24,12 @@ class EnglishStudyApp:
         self.root = root
         self.root.title("English Study App")
         self.root.geometry("800x600")
+        
+        # Initialize threading-related variables
+        self.update_thread = None
+        self.update_queue = Queue()  # Queue for communication between main thread and update thread
+        self.update_candidates = Queue()  # Queue for storing candidates for updates
+        self.is_updating = False
         
         # Configure grid weights to center content
         self.root.grid_rowconfigure(0, weight=1)
@@ -43,7 +51,6 @@ class EnglishStudyApp:
         self.qa_pairs = []
         self.total_questions = 0
         self.df = None  # Store the database DataFrame
-        self.incorrect_answers = []  # Store incorrect answers for batch update
         
         # Create frames for different pages
         self.start_frame = ttk.Frame(root, padding="20")
@@ -59,6 +66,12 @@ class EnglishStudyApp:
         
         # Show start page initially
         self.show_start_page()
+        
+        # Start checking for update results
+        self.check_update_results()
+        
+        # Start the update processing thread
+        self.start_update_thread()
     
     def create_start_page(self):
         # Configure start frame grid weights
@@ -271,6 +284,14 @@ class EnglishStudyApp:
         self.answer_entry.bind('<Return>', lambda e: self.check_answer())
     
     def show_start_page(self):
+        # Check if database update is in progress
+        if self.is_updating:
+            messagebox.showwarning(
+                "Please Wait",
+                "A database update is in progress. Please wait until it completes before changing pages."
+            )
+            return
+            
         self.quiz_frame.grid_remove()
         self.start_frame.grid()
         self.start_button.config(state='normal')
@@ -363,7 +384,6 @@ class EnglishStudyApp:
             self.current_question = 0
             self.score = 0
             self.total_questions = len(self.qa_pairs)
-            self.incorrect_answers = []
             
             # Enable quiz interface
             self.answer_entry.config(state='normal')
@@ -401,14 +421,15 @@ class EnglishStudyApp:
         if user_answer == correct_answer.lower():
             self.score += 1
             messagebox.showinfo("Correct!", "✓ Well done!")
-            # Store correct answer for batch update to decrease multiplicity
+            # Add correct answer to update candidates queue
             try:
                 current_word_data = self.df[self.df['Word'] == correct_answer].iloc[0]
                 if current_word_data['Multiplicity'] > 1:  # Only decrease if not already at 0
-                    self.incorrect_answers.append({
+                    self.update_candidates.put({
                         'page_id': current_word_data['page_id'],
                         'current_multiplicity': current_word_data['Multiplicity'] - 2,
-                        'decrease': True  # Flag to indicate this is a decrease operation
+                        'decrease': True,  # Flag to indicate this is a decrease operation
+                        'word': correct_answer
                     })
                     # Update local DataFrame
                     self.df.loc[self.df['Word'] == correct_answer, 'Multiplicity'] -= 1
@@ -419,13 +440,14 @@ class EnglishStudyApp:
                 "Incorrect",
                 f"✗ The correct answer is: {correct_answer}"
             )
-            # Store incorrect answer for batch update to increase multiplicity
+            # Add incorrect answer to update candidates queue
             try:
                 current_word_data = self.df[self.df['Word'] == correct_answer].iloc[0]
-                self.incorrect_answers.append({
+                self.update_candidates.put({
                     'page_id': current_word_data['page_id'],
                     'current_multiplicity': current_word_data['Multiplicity'],
-                    'decrease': False  # Flag to indicate this is an increase operation
+                    'decrease': False,  # Flag to indicate this is an increase operation
+                    'word': correct_answer
                 })
                 # Update local DataFrame
                 self.df.loc[self.df['Word'] == correct_answer, 'Multiplicity'] += 1
@@ -447,6 +469,60 @@ class EnglishStudyApp:
             text=f"Score: {self.score}/{self.current_question}"
         )
     
+    def start_update_thread(self):
+        """Start the thread that processes database updates"""
+        self.update_thread = threading.Thread(target=self.process_updates, daemon=True)
+        self.update_thread.start()
+
+    def process_updates(self):
+        """Process updates from the update_candidates queue"""
+        while True:
+            try:
+                # Get an update candidate from the queue
+                answer = self.update_candidates.get(timeout=1)  # Wait 1 second before checking again
+                
+                try:
+                    notion = Client(auth=self.config.get('NOTION_API_KEY'))
+                    if update_word_multiplicity(notion, answer['page_id'], answer['current_multiplicity'], answer.get('decrease', False)):
+                        self.update_queue.put({
+                            'type': 'success',
+                            'word': answer.get('word', 'Unknown word')
+                        })
+                    else:
+                        self.update_queue.put({
+                            'type': 'failed',
+                            'word': answer.get('word', 'Unknown word')
+                        })
+                except Exception as e:
+                    self.update_queue.put({
+                        'type': 'error',
+                        'error': str(e),
+                        'word': answer.get('word', 'Unknown word')
+                    })
+                
+                # Mark the task as done
+                self.update_candidates.task_done()
+                
+            except Empty:  # Use Empty instead of Queue.Empty
+                # Queue is empty, continue waiting
+                continue
+
+    def check_update_results(self):
+        """Check for results from the update thread and handle them"""
+        try:
+            while True:
+                result = self.update_queue.get_nowait()
+                if result.get('type') == 'success':
+                    print(f"Successfully updated: {result.get('word')}")
+                elif result.get('type') == 'failed':
+                    print(f"Failed to update: {result.get('word')}")
+                elif result.get('type') == 'error':
+                    print(f"Error updating {result.get('word')}: {result.get('error')}")
+        except Empty:  # Use Empty instead of Queue.Empty
+            pass
+        finally:
+            self.root.after(100, self.check_update_results)
+
     def show_final_score(self):
         percentage = (self.score / self.total_questions) * 100
         messagebox.showinfo(
@@ -455,33 +531,10 @@ class EnglishStudyApp:
             f"Percentage: {percentage:.1f}%"
         )
         
-        # Update Notion database with all word multiplicity changes
-        if self.incorrect_answers:
-            try:
-                # Disable UI elements and show updating message
-                self.answer_entry.config(state='disabled')
-                self.submit_button.config(state='disabled')
-                self.question_label.config(text="Updating the database...")
-                self.root.update()
-                
-                notion = Client(auth=self.config.get('NOTION_API_KEY'))
-                success_count = 0
-                for answer in self.incorrect_answers:
-                    if update_word_multiplicity(notion, answer['page_id'], answer['current_multiplicity'], answer.get('decrease', False)):
-                        success_count += 1
-                
-                if success_count < len(self.incorrect_answers):
-                    messagebox.showerror(
-                        "Update Warning",
-                        f"Failed to update {len(self.incorrect_answers) - success_count} words in Notion database"
-                    )
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to update Notion database: {str(e)}")
-            
-            # Clear the incorrect answers list
-            self.incorrect_answers = []
-        
+        # Update UI immediately without waiting for updates
         self.question_label.config(text="Click 'New Quiz' to start another quiz!")
+        self.answer_entry.config(state='normal')
+        self.submit_button.config(state='normal')
 
 def main():
     root = tk.Tk()
